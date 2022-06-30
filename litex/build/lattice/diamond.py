@@ -14,6 +14,7 @@ import subprocess
 import shutil
 from shutil import which
 
+from migen import ClockSignal
 from migen.fhdl.structure import _Fragment
 
 from litex.gen.fhdl.verilog import DummyAttrTranslate
@@ -46,7 +47,7 @@ def _format_lpf(signame, pin, others, resname):
     return "\n".join(lpf)
 
 
-def _build_lpf(named_sc, named_pc, clocks, vns, build_name):
+def _build_lpf(named_sc, named_pc, clocks, false_paths, unrelated_clocks, vns, build_name):
     lpf = []
     lpf.append("BLOCK RESETPATHS;")
     lpf.append("BLOCK ASYNCPATHS;")
@@ -66,6 +67,27 @@ def _build_lpf(named_sc, named_pc, clocks, vns, build_name):
             "PORT" if clk_name in [name for name, _, _, _ in named_sc] else "NET",
             clk_name,
             str(1e3/period)))
+
+    for from_, to in false_paths:
+        def obj_spec(way, obj):
+            if obj is None:
+                return ""
+            vn = vns.get_name(obj)
+            if vn in [name for name, _, _, _ in named_sc]:
+                desc = "PORT"
+            else:
+                desc = "CELL"
+            return f"{way} {desc} {vn}"
+        lpf.append("BLOCK PATH {fromspec} {tospec};".format(
+                fromspec=obj_spec("FROM", from_),
+                tospec=obj_spec("TO", to)))
+
+    for clk1, clk2 in unrelated_clocks:
+        lpf.append(f"BLOCK PATH FROM CLKNET {clk1}_clk TO CLKNET {clk2}_clk;")
+
+    """
+    set_false_path -through [get_nets -hierarchical -filter {mr_ff == "true"}]
+    """
 
     tools.write_to_file(build_name + ".lpf", "\n".join(lpf))
 
@@ -193,13 +215,15 @@ class LatticeDiamondToolchain:
     attr_translate = {
         "keep":             ("syn_keep", "true"),
         "no_retiming":      ("syn_no_retiming", "true"),
+        "mr_ff":            ("mr_ff", "true"), # user-defined attribute
     }
 
     special_overrides = common.lattice_ecp5_special_overrides
 
     def __init__(self):
         self.clocks      = {}
-        self.false_paths = set() # FIXME: use it
+        self.false_paths = set()
+        self.unrelated_clocks = set()
 
     def build(self, platform, fragment,
         build_dir      = "build",
@@ -226,7 +250,7 @@ class LatticeDiamondToolchain:
         platform.add_source(v_file)
 
         # Generate design constraints file (.lpf)
-        _build_lpf(named_sc, named_pc, self.clocks, v_output.ns, build_name)
+        _build_lpf(named_sc, named_pc, self.clocks, self.false_paths, self.unrelated_clocks, v_output.ns, build_name)
 
         # Generate design script file (.tcl)
         _build_tcl(platform.device, platform.sources, platform.verilog_include_paths, build_name)
@@ -254,7 +278,13 @@ class LatticeDiamondToolchain:
         self.clocks[clk] = period
 
     def add_false_path_constraint(self, platform, from_, to):
-        from_.attr.add("keep")
-        to.attr.add("keep")
-        if (to, from_) not in self.false_paths:
-            self.false_paths.add((from_, to))
+        assert from_ is not None or to is not None
+        if isinstance(from_, ClockSignal) and isinstance(to, ClockSignal):
+            self.unrelated_clocks.add((from_.cd, to.cd))
+        else:
+            if isinstance(from_, Signal):
+                from_.attr.add("keep")
+            if isinstance(to, Signal):
+                to.attr.add("keep")
+            if (to, from_) not in self.false_paths:
+                self.false_paths.add((from_, to))

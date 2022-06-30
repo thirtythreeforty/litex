@@ -11,6 +11,7 @@
 from migen.fhdl.module import Module
 from migen.fhdl.specials import Instance, Tristate
 from migen.fhdl.bitcontainer import value_bits_sign
+from migen.genlib.cdc import *
 from migen.genlib.resetsync import AsyncResetSynchronizer
 
 from litex.build.io import *
@@ -136,6 +137,19 @@ class LatticeECP5DifferentialOutput:
     def lower(dr):
         return LatticeECP5DifferentialOutputImpl(dr.i, dr.o_p, dr.o_n)
 
+class LatticeECP5MultiReg(MultiReg):
+    @staticmethod
+    def lower(dr):
+        return LatticeECP5MultiRegImpl(dr.i, dr.o, dr.odomain, dr.n)
+
+class LatticeECP5MultiRegImpl(MultiRegImpl):
+    def __init__(self, *args, **kwargs):
+        MultiRegImpl.__init__(self, *args, **kwargs)
+        i = self.i
+        if len(self.regs):
+            self.regs[0].attr.add("mr_ff")
+            self.regs[0].attr.add("keep")
+
 # ECP5 Special Overrides ---------------------------------------------------------------------------
 
 lattice_ecp5_special_overrides = {
@@ -146,6 +160,7 @@ lattice_ecp5_special_overrides = {
     DDROutput:              LatticeECP5DDROutput,
     DifferentialInput:      LatticeECP5DifferentialInput,
     DifferentialOutput:     LatticeECP5DifferentialOutput,
+    MultiReg:               LatticeECP5MultiReg,
 }
 
 # ECP5 Trellis Tristate ----------------------------------------------------------------------------
